@@ -65,8 +65,12 @@
 
 
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  conversations  │ 1─* │    messages     │     │   ai_prompts    │
+│ project_folders │ 1─* │  conversations  │ 1─* │    messages     │
 └─────────────────┘     └─────────────────┘     └─────────────────┘
+
+┌─────────────────┐
+│   ai_prompts    │
+└─────────────────┘
 
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
 │ content_modules │ 1─* │ content_progress│ *─1 │    profiles     │
@@ -697,6 +701,41 @@ CREATE INDEX idx_calculations_date ON strategy_calculations(created_at);
 
 ## Coaching & Education Tables
 
+### `project_folders`
+
+User-created folders for organizing conversations.
+
+```sql
+CREATE TABLE project_folders (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+
+    -- Folder Info
+    name TEXT NOT NULL,
+    description TEXT,
+
+    -- Display
+    color_tag TEXT DEFAULT '#4F46E5', -- Hex color for UI
+    icon_name TEXT DEFAULT 'folder',  -- Icon identifier
+
+    -- Ordering
+    sort_order INTEGER DEFAULT 0,
+
+    -- Status
+    is_active BOOLEAN DEFAULT TRUE,
+
+    -- Metadata
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+
+    -- Unique name per user
+    UNIQUE(user_id, name)
+);
+
+CREATE INDEX idx_project_folders_user ON project_folders(user_id);
+CREATE INDEX idx_project_folders_active ON project_folders(user_id, is_active) WHERE is_active;
+```
+
 ### `conversations`
 
 Chat conversation sessions.
@@ -716,6 +755,9 @@ CREATE TABLE conversations (
     )),
     context_reference_id UUID, -- Could reference strategy, debt, etc.
 
+    -- Project Folder Organization
+    project_folder_id UUID REFERENCES project_folders(id) ON DELETE SET NULL,
+
     -- Status
     status TEXT DEFAULT 'active' CHECK (status IN (
         'active', 'archived', 'deleted'
@@ -730,6 +772,7 @@ CREATE TABLE conversations (
 
 CREATE INDEX idx_conversations_user ON conversations(user_id);
 CREATE INDEX idx_conversations_recent ON conversations(user_id, last_message_at DESC);
+CREATE INDEX idx_conversations_folder ON conversations(project_folder_id) WHERE project_folder_id IS NOT NULL;
 ```
 
 ### `messages`
@@ -1155,6 +1198,7 @@ ALTER TABLE strategies ENABLE ROW LEVEL SECURITY;
 ALTER TABLE strategy_milestones ENABLE ROW LEVEL SECURITY;
 ALTER TABLE what_if_scenarios ENABLE ROW LEVEL SECURITY;
 ALTER TABLE strategy_calculations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE project_folders ENABLE ROW LEVEL SECURITY;
 ALTER TABLE conversations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE messages ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_content_progress ENABLE ROW LEVEL SECURITY;
@@ -1176,8 +1220,8 @@ ALTER TABLE ai_prompts ENABLE ROW LEVEL SECURITY;
 -- Template policy for user-owned data
 -- Apply to: profiles, user_settings, income_sources, expenses, debts,
 --           debt_history, accounts, transactions, strategies, strategy_milestones,
---           what_if_scenarios, strategy_calculations, conversations, messages,
---           user_content_progress, user_achievements, notifications, scheduled_tasks
+--           what_if_scenarios, strategy_calculations, project_folders, conversations,
+--           messages, user_content_progress, user_achievements, notifications, scheduled_tasks
 
 -- Example for profiles table
 CREATE POLICY "Users can view own profile" ON profiles
@@ -1197,6 +1241,19 @@ CREATE POLICY "Users can update own debts" ON debts
     FOR UPDATE USING (auth.uid() = user_id);
 
 CREATE POLICY "Users can delete own debts" ON debts
+    FOR DELETE USING (auth.uid() = user_id);
+
+-- Example for project_folders table
+CREATE POLICY "Users can view own folders" ON project_folders
+    FOR SELECT USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can insert own folders" ON project_folders
+    FOR INSERT WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can update own folders" ON project_folders
+    FOR UPDATE USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can delete own folders" ON project_folders
     FOR DELETE USING (auth.uid() = user_id);
 
 -- Public content tables
@@ -1369,6 +1426,9 @@ CREATE TRIGGER set_updated_at BEFORE UPDATE ON strategies
 CREATE TRIGGER set_updated_at BEFORE UPDATE ON strategy_milestones
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
+CREATE TRIGGER set_updated_at BEFORE UPDATE ON project_folders
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
 CREATE TRIGGER set_updated_at BEFORE UPDATE ON conversations
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
@@ -1417,6 +1477,8 @@ Summary of critical indexes (already defined inline with tables):
 | debt_history | idx_debt_history_date | Timeline queries |
 | transactions | idx_transactions_date | Date range queries |
 | strategies | idx_strategies_primary | Find active strategy |
+| project_folders | idx_project_folders_user | User folder lookups |
+| conversations | idx_conversations_folder | Folder-based filtering |
 | messages | idx_messages_date | Conversation loading |
 | notifications | idx_notifications_unread | Unread count |
 | audit_logs | idx_audit_date | Time-based auditing |
@@ -1453,7 +1515,8 @@ CREATE TABLE what_if_scenarios ...
 CREATE TABLE strategy_calculations ...
 
 -- 5. Coaching tables
-CREATE TABLE conversations ...
+CREATE TABLE project_folders ...
+CREATE TABLE conversations ... -- Depends on project_folders
 CREATE TABLE messages ...
 CREATE TABLE user_content_progress ...
 CREATE TABLE user_achievements ...
